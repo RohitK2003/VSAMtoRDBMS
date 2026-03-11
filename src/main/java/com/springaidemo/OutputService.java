@@ -136,7 +136,7 @@ public class OutputService {
      */
     private void processSingleFile(Path dataFile, Path convertedDir) throws Exception {
         String fileName = dataFile.getFileName().toString();
-        FileMapping mapping = repository.findById(fileName)
+        FileMapping mapping = repository.findByVsamFile(fileName)
                 .orElseThrow(() -> new RuntimeException("No copybook mapping found for: " + fileName));
 
         String copybookName = mapping.getCopybookFile();
@@ -179,46 +179,105 @@ public class OutputService {
             }
         }
 
-        // 2️⃣ Write CSV header
-        try (BufferedReader reader = Files.newBufferedReader(dataFile, StandardCharsets.ISO_8859_1);
-             BufferedWriter writer = Files.newBufferedWriter(csvOutputFile, StandardCharsets.UTF_8)) {
+        // Calculate total record length from field definitions
+        int recordLength = fields.stream().mapToInt(f -> f.precision).sum();
+        
+        // 2️⃣ Write CSV header and read data file in fixed-record chunks
+        try (BufferedWriter writer = Files.newBufferedWriter(csvOutputFile, StandardCharsets.UTF_8)) {
 
             // Write header line
             String header = fields.stream().map(f -> f.name).reduce((a,b) -> a + "," + b).orElse("");
             writer.write(header);
             writer.newLine();
 
-            String recordLine;
-            while ((recordLine = reader.readLine()) != null) {
+            // Read data file as binary and process fixed-length records
+            byte[] fileBytes = Files.readAllBytes(dataFile);
+            String fileContent = new String(fileBytes, StandardCharsets.ISO_8859_1);
+            
+            // Detect if file has line separators (from EBCDIC conversion)
+            boolean hasLineBreaks = fileContent.contains("\n") || fileContent.contains("\r");
+            
+            List<String> recordLines = new ArrayList<>();
+            
+            if (hasLineBreaks) {
+                // File has embedded newlines - use line-by-line reading
+                try (BufferedReader reader = new BufferedReader(new java.io.StringReader(fileContent))) {
+                    String recordLine;
+                    while ((recordLine = reader.readLine()) != null) {
+                        if (!recordLine.trim().isEmpty()) {
+                            recordLines.add(recordLine);
+                        }
+                    }
+                }
+            } else {
+                // Pure fixed-length format without newlines - split into fixed-size chunks
+                int offset = 0;
+                while (offset < fileContent.length()) {
+                    int endPos = Math.min(offset + recordLength, fileContent.length());
+                    String recordLine = fileContent.substring(offset, endPos);
+                    offset = endPos;
+                    
+                    if (!recordLine.trim().isEmpty()) {
+                        recordLines.add(recordLine);
+                    }
+                }
+            }
+
+            // Process all extracted records
+            for (String recordLine : recordLines) {
                 StringBuilder sb = new StringBuilder();
                 int pos = 0;
+                boolean recordEnded = false;
 
                 for (int i = 0; i < fields.size(); i++) {
                     Field f = fields.get(i);
                     String value = "";
+                    
+                    // Check if this is the last field
+                    boolean isLastField = (i == fields.size() - 1);
+                    boolean isFillerField = f.name.toUpperCase().contains("FILLER");
 
-                    // Find substring up to next { if scale > 0, else precision
-                    if (pos >= recordLine.length()) {
+                    // If we already hit Filler and processed it, skip remaining fields
+                    if (recordEnded) {
+                        value = "";
+                    } else if (pos >= recordLine.length()) {
                         value = "";
                     } else {
                         int remaining = recordLine.length() - pos;
-                        int len = Math.min(f.precision, remaining);
-                        value = recordLine.substring(pos, pos + len);
-                        pos += len;
-
-                        // For scaled numeric, continue reading until '{' or scale
-                        if ((f.type.equalsIgnoreCase("NUMERIC") || f.type.equalsIgnoreCase("BIGINT")) && f.scale > 0) {
-                            StringBuilder decimalPart = new StringBuilder();
-                            int count = 0;
-                            while (pos < recordLine.length() && recordLine.charAt(pos) != '{' && count < f.scale) {
-                                decimalPart.append(recordLine.charAt(pos));
-                                pos++; count++;
+                        
+                        // Special handling for Filler fields ONLY if it's the LAST field
+                        if (isFillerField && isLastField) {
+                            // Skip all trailing spaces in Filler field (last field only)
+                            int spacesToSkip = 0;
+                            while (pos + spacesToSkip < recordLine.length() && 
+                                   recordLine.charAt(pos + spacesToSkip) == ' ') {
+                                spacesToSkip++;
                             }
-                            value = value + "." + (decimalPart.length() > 0 ? decimalPart.toString() : "0");
-                        }
+                            // Leave Filler blank
+                            value = "";
+                            pos += spacesToSkip;
+                            // Mark that Filler is done - next non-space is start of next record
+                            recordEnded = true;
+                        } else {
+                            // Normal field extraction (for non-last Filler or any other field)
+                            int len = Math.min(f.precision, remaining);
+                            value = recordLine.substring(pos, pos + len);
+                            pos += len;
 
-                        // Skip '{' if present
-                        if (pos < recordLine.length() && recordLine.charAt(pos) == '{') pos++;
+                            // For scaled numeric, continue reading until '{' or scale
+                            if ((f.type.equalsIgnoreCase("NUMERIC") || f.type.equalsIgnoreCase("BIGINT")) && f.scale > 0) {
+                                StringBuilder decimalPart = new StringBuilder();
+                                int count = 0;
+                                while (pos < recordLine.length() && recordLine.charAt(pos) != '{' && count < f.scale) {
+                                    decimalPart.append(recordLine.charAt(pos));
+                                    pos++; count++;
+                                }
+                                value = value + "." + (decimalPart.length() > 0 ? decimalPart.toString() : "0");
+                            }
+
+                            // Skip '{' if present
+                            if (pos < recordLine.length() && recordLine.charAt(pos) == '{') pos++;
+                        }
                     }
 
                     // Remove any { leftover just in case
