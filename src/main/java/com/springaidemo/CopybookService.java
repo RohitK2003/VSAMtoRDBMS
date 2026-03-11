@@ -29,6 +29,9 @@ public class CopybookService {
     @Value("${app.output.dir}")
     private String outputDir;
 
+    @Value("${app.copybook.intermediate}")
+    private String copybookIntermediateDir;
+
     // Regex to parse PIC clause
     private static final Pattern PIC_PATTERN =
             Pattern.compile("PIC\\s+([SX9Vv0-9\\(\\)]+)(\\s+COMP-3|\\s+COMP|\\s+SIGNED)?",
@@ -48,20 +51,41 @@ public class CopybookService {
         return ZipUtil.unzip(file, dir);
     }
 
+    /**
+     * Get all copybook file names ending with .cpy from app.copybook.dir
+     */
+    public List<String> getAllCopybookFiles() throws Exception {
+        Path dir = Path.of(copybookDir);
+        
+        if (!Files.exists(dir)) {
+            return new ArrayList<>();
+        }
+
+        try (Stream<Path> paths = Files.walk(dir)) {
+            return paths.filter(p -> p.toString().toLowerCase().endsWith(".cpy"))
+                        .map(p -> p.getFileName().toString())
+                        .sorted()
+                        .collect(Collectors.toList());
+        }
+    }
+
     public Path processCopybooks() throws Exception {
         Path dir = Path.of(copybookDir);  // folder from application.properties
         Files.createDirectories(dir);     // ensure folder exists
+
+        Path intermediateDir = Path.of(copybookIntermediateDir);
+        Files.createDirectories(intermediateDir);
 
         try (Stream<Path> paths = Files.walk(dir)) {
             List<Path> copybooks = paths
                     .filter(p -> p.toString().toLowerCase().endsWith(".cpy"))
                     .collect(Collectors.toList());
             for (Path copybook : copybooks) {
-                // Always write processed file to the root copybookDir, not subfolders
-                processSingleCopybook(copybook, dir);
+                // Write processed file to the intermediate directory
+                processSingleCopybook(copybook, intermediateDir);
             }
         }
-        return dir; // processed files are now directly in copybookDir
+        return intermediateDir; // processed files are now in copybookIntermediateDir
     }
 
     private void processSingleCopybook(Path copybookPath, Path outputDir) {

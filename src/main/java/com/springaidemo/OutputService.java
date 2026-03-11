@@ -32,17 +32,29 @@ public class OutputService {
     @Value("${app.sql.output}")
     private String sqlOutputDir;
 
+    @Value("${app.data.csv}")
+    private String csvDataDirPath;
+
+    @Value("${app.copybook.intermediate}")
+    private String copybookIntermediateDirPath;
+
     private Path appDataDir;
     private Path copybookDir;
+    private Path csvDataDir;
+    private Path copybookIntermediateDir;
 
     @Autowired
     public void init() throws IOException {
         appDataDir = Paths.get(appDataDirPath);
         copybookDir = Paths.get(copybookDirPath);
+        csvDataDir = Paths.get(csvDataDirPath);
+        copybookIntermediateDir = Paths.get(copybookIntermediateDirPath);
         
 
         Files.createDirectories(appDataDir);
         Files.createDirectories(copybookDir);
+        Files.createDirectories(csvDataDir);
+        Files.createDirectories(copybookIntermediateDir);
     }
 
     /**
@@ -104,15 +116,14 @@ public class OutputService {
             throw new RuntimeException("Data directory not found: " + appDataDir.toAbsolutePath());
         }
 
-        Path convertedDir = appDataDir.resolve("converted-data");
-        Files.createDirectories(convertedDir);
+        Files.createDirectories(csvDataDir);
 
         try (Stream<Path> files = Files.list(appDataDir)) {
             files.filter(file -> file.toString().toLowerCase().endsWith(".ps") ||
                                  file.toString().toLowerCase().endsWith(".txt"))
                  .forEach(file -> {
                      try {
-                         processSingleFile(file, convertedDir);
+                         processSingleFile(file, csvDataDir);
                      } catch (Exception e) {
                          throw new RuntimeException(e);
                      }
@@ -129,7 +140,7 @@ public class OutputService {
                 .orElseThrow(() -> new RuntimeException("No copybook mapping found for: " + fileName));
 
         String copybookName = mapping.getCopybookFile();
-        Path layoutFile = copybookDir.resolve(copybookName + ".txt"); // processed layout
+        Path layoutFile = copybookIntermediateDir.resolve(copybookName + ".txt"); // processed layout from intermediate dir
 
         String baseName = fileName.contains(".") ? fileName.substring(0, fileName.lastIndexOf(".")) : fileName;
         Path csvOutputFile = convertedDir.resolve(baseName + ".csv");
